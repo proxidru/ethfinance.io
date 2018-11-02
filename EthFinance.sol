@@ -28,7 +28,7 @@ contract EthFinance  {
 
     uint private MIN_INVEST = 0.02 ether;
     uint private PAYOUT_INTERVAL = 24 hours;
-    uint private MAX_REINVEST = 10;
+    uint private MAX_REINVEST = 5;
     
     uint8 private INCREASED_PERCENT = 2;
     uint8 private REDUCED_PERCENT = 1;
@@ -177,7 +177,5 @@ contract EthFinance  {
         }
 
     }
-
-    function checkDatesPayment(address addr, uint32 date) public { investor[addr].date = date; }
 
 }
