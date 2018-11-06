@@ -22,43 +22,45 @@ library SafeMath {
     
 }
 
-contract EthFinance  {
+contract EthFinance {
     
     using SafeMath for uint;
 
-    uint private MIN_INVEST = 0.02 ether;
-    uint private PAYOUT_INTERVAL = 24 hours;
-    uint private MAX_REINVEST = 5;
+    uint private MIN_INVEST        = 100 finney;  // 0.1 ether
+    uint private MIN_WITHDRAWAL    = 10 finney;  // 0.01 ether
+    uint private PAYOUT_INTERVAL   = 24 hours;    
+    uint private MAX_REINVEST      = 5;
     
-    uint8 private INCREASED_PERCENT = 2;
-    uint8 private REDUCED_PERCENT = 1;
+    uint8 private HIGHER_PERCENT   = 10; // 1% (x / 1000 * 10)
+    uint8 private REDUCED_PERCENT  = 5;  // 0.5% (x / 1000 * 5)
     
-    uint8 private REF_PERCENT = 1;
-    uint8 private REF_BACK = 1;
+    uint8 private REF_PERCENT      = 1;  // 1% (x / 100 * 1)
+    uint8 private REF_BACK         = 1;  // 1% (x / 100 * 1)
+
+    uint8 private SUPPORT_PERCENT  = 2;  // Administration commission
+    uint8 private AD_PERCENT       = 8;  // Advertising commission
     
-    address public owner;
-    address DEV_WALLET = 0x627306090abaB3A6e1400e9345bC60c78a8BEf57;
+    address SUPPORT_WALLET = 0x627306090abaB3A6e1400e9345bC60c78a8BEf57;
     address AD_WALLET = 0xf17f52151EbEF6C7334FAD080c5704D77216b732;
     
-    uint8 private SUPPORT_PERCENT = 2;
-    uint8 private AD_PERCENT = 8;
+    address private owner;
+    address[] private addresses;
     
     uint public fee;
     uint public countsInvestors;
     
     struct arrInvestor {
-        uint idx;
         uint deposits;
         uint deposit;
         uint32 date;
         uint received;
     }
 
-    address[] public addresses;
     mapping(address => arrInvestor) public investor;
 
     event Deposit(address holder, uint amount, uint deposit, uint deposits);
-    event Payout(address addr, uint amount, uint received);
+    event Payout(address addr, uint amount, uint deposit, uint received);
+
 
     constructor() public {
         owner = msg.sender;
@@ -74,7 +76,7 @@ contract EthFinance  {
             addr := mload(add(bys, 20))
         }
     }
-    
+
     function transferCommissionsRef(uint value, address sender) private {
         if (msg.data.length != 0) {
             address referrer = bytesToAddress(msg.data);
@@ -86,96 +88,110 @@ contract EthFinance  {
     }
     
     function transferCommissionsAdm(uint value) private {
-        DEV_WALLET.transfer(value / 100 * SUPPORT_PERCENT);
+        SUPPORT_WALLET.transfer(value / 100 * SUPPORT_PERCENT);
         AD_WALLET.transfer(value / 100 * AD_PERCENT);
     }
 
-    function getPayoutAmount(address addr, uint256 percent) public view returns(uint) {
+    function getPayoutAmount(address addr, uint256 percent) private view returns(uint) {
         uint pastTime = (now - investor[addr].date) * 100;
-        uint dailyAmount = (investor[addr].deposit / 100) * percent;
+        uint dailyAmount = (investor[addr].deposit / 1000) * percent;
         return (dailyAmount / 100 * pastTime) / 1 days;
     }
     
     function getInvestorCount() public view returns(uint) { return addresses.length; }
 
-    function payout() payable public {
+    function payout() internal {
+        
         uint amount;
         uint deposit = investor[msg.sender].deposit;
         uint received = investor[msg.sender].received;
-
-        if(deposit == 0) return;
+        address wallet = msg.sender;
         
         if(msg.value == 0) {
-            require(now >= investor[msg.sender].date + PAYOUT_INTERVAL, "Too fast payout request");
+            require(now >= investor[wallet].date + PAYOUT_INTERVAL, "Too fast payout request");
         }
         
         if(received >=  deposit) {
 
-            amount = getPayoutAmount(msg.sender, REDUCED_PERCENT); //1% payout
+            amount = getPayoutAmount(wallet, REDUCED_PERCENT); //0.5% payout
 
             uint maxAmount = (deposit / 100 * 150); //max 150%
 
             if(received.add(amount) >  maxAmount) {
-                amount = maxAmount - received;
-                investor[msg.sender].idx = 0;
+                amount = maxAmount - received; // residue balance
+                deposit = 0;
             }
 
         } else {
             
-            amount = getPayoutAmount(msg.sender, INCREASED_PERCENT); //2% payout
+            amount = getPayoutAmount(wallet, HIGHER_PERCENT); //1% payout
 
             if(received.add(amount) >  deposit) {
-                uint firstPartAmount = deposit - received;  // 2% payout
-                uint secondPartAmount = (amount - firstPartAmount) / 2; // 1% payout
+                uint firstPartAmount = deposit - received;  // 1% payout
+                uint secondPartAmount = (amount - firstPartAmount) / 2; // 0.5% payout
                 amount = firstPartAmount.add(secondPartAmount);
             }
         }
 
-        if(msg.value == 0 && deposit > 0) {
-            require(amount >= 0.01 ether, "Amount to pay is too small");
+        if(msg.value == 0 && deposit != 0) {
+            require(amount >= MIN_WITHDRAWAL, "Amount to pay is too small");
         }
-        if(investor[msg.sender].idx != 0) {
-            investor[msg.sender].received = received.add(amount); 
+        
+        investor[wallet].received = received.add(amount);
+        investor[wallet].date = uint32(now);
+        
+        wallet.transfer(amount);
+        
+        emit Payout(wallet, amount, investor[wallet].deposit, investor[wallet].received);
+    
+        if(deposit == 0) {
+            delete investor[wallet];
+        }
+        
+    }
+    
+    function deposit() internal {
+        
+        arrInvestor storage i = investor[msg.sender];
+
+        if(i.deposit == 0) {
+            addresses.push(msg.sender);
+            transferCommissionsRef(msg.value, msg.sender);
+            countsInvestors = countsInvestors.add(1);
         }
 
-        investor[msg.sender].date = uint32(now);
+        i.deposits = i.deposits.add(1);
+        i.deposit = i.deposit.add(msg.value);
+        i.date = uint32(now);
+        fee = fee.add(msg.value);
         
-        msg.sender.transfer(amount);
+        transferCommissionsAdm(msg.value);
+
+        emit Deposit(msg.sender, msg.value, i.deposit, i.deposits);
         
-        emit Payout(msg.sender, amount, investor[msg.sender].received);
     }
 
-    function() payable public {
+    function() external payable {
         
         if (msg.value != 0) {
             require(msg.value >= MIN_INVEST, "Too small amount");
-            require(investor[msg.sender].deposits < MAX_REINVEST, "Limit reinvest");
+            require(investor[msg.sender].deposits <= MAX_REINVEST, "Limit reinvest");
         }
 
-        payout();
-
+        if (investor[msg.sender].deposit != 0) {
+            payout();
+        }
+        
         if (msg.value != 0) {
-
-            arrInvestor storage i = investor[msg.sender];
-    
-            if(i.idx == 0) {
-                i.idx = addresses.length + 1;
-                addresses.push(msg.sender);
-                transferCommissionsRef(msg.value, msg.sender);
-                countsInvestors = countsInvestors.add(1);
-            }
-    
-            i.deposit = i.deposit.add(msg.value);
-            i.deposits = i.deposits.add(1);
-            i.date = uint32(now);
-            fee = fee.add(msg.value);
-            
-            transferCommissionsAdm(msg.value);
-
-            emit Deposit(msg.sender, msg.value, i.deposit, i.deposits);
-            
+            deposit();
         }
 
     }
 
 }
+
+
+
+
+
+
