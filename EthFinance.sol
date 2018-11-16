@@ -13,6 +13,13 @@ pragma solidity ^0.4.25;
 
 library SafeMath {
 
+    function sub(uint256 a, uint256 b) internal pure returns(uint256) {
+        require(b <= a);
+        uint256 c = a - b;
+
+        return c;
+    }
+
     function add(uint a, uint b) internal pure returns(uint) {
         uint c = a + b;
         require(c >= a);
@@ -30,12 +37,13 @@ contract EthFinance {
     uint private MIN_WITHDRAWAL    = 10 finney;  // 0.01 ether
     uint private PAYOUT_INTERVAL   = 24 hours;    
     uint private MAX_REINVEST      = 5;
+    uint private MAX_PERCENT       = 150; // 150%
     
-    uint8 private HIGHER_PERCENT   = 10; // 1% (x / 1000 * 10)
-    uint8 private REDUCED_PERCENT  = 5;  // 0.5% (x / 1000 * 5)
+    uint8 private HIGHER_PERCENT   = 10; // 1% (x * 10 / 1000)
+    uint8 private REDUCED_PERCENT  = 5;  // 0.5% (x * 5 / 1000)
     
-    uint8 private REF_PERCENT      = 1;  // 1% (x / 100 * 1)
-    uint8 private REF_BACK         = 1;  // 1% (x / 100 * 1)
+    uint8 private REF_PERCENT      = 1;  // 1% (x * 1 / 100)
+    uint8 private REF_BACK         = 1;  // 1% (x * 1 / 100)
 
     uint8 private SUPPORT_PERCENT  = 2;  // Administration commission
     uint8 private AD_PERCENT       = 8;  // Advertising commission
@@ -44,9 +52,8 @@ contract EthFinance {
     address AD_WALLET = 0xf17f52151EbEF6C7334FAD080c5704D77216b732;
     
     address private owner;
-    address[] private addresses;
-    
-    uint public fee;
+
+    uint public totalDeposits;
     uint public countsInvestors;
     
     struct arrInvestor {
@@ -80,60 +87,60 @@ contract EthFinance {
     function transferCommissionsRef(uint value, address sender) private {
         if (msg.data.length != 0) {
             address referrer = bytesToAddress(msg.data);
+            require(investor[referrer].deposit != 0, "Used referrer not found in contract");
             if(referrer != sender) {
-                sender.transfer(value / 100 * REF_BACK);
-                referrer.transfer(value / 100 * REF_PERCENT);
+                sender.transfer(value * REF_BACK / 100);
+                referrer.transfer(value * REF_PERCENT / 100);
             }
         }
     }
     
     function transferCommissionsAdm(uint value) private {
-        SUPPORT_WALLET.transfer(value / 100 * SUPPORT_PERCENT);
-        AD_WALLET.transfer(value / 100 * AD_PERCENT);
+        SUPPORT_WALLET.transfer(value * SUPPORT_PERCENT / 100);
+        AD_WALLET.transfer(value * AD_PERCENT / 100);
     }
 
     function getPayoutAmount(address addr, uint256 percent) private view returns(uint) {
-        uint pastTime = (now - investor[addr].date) * 100;
-        uint dailyAmount = (investor[addr].deposit / 1000) * percent;
-        return (dailyAmount / 100 * pastTime) / 1 days;
+        uint pastTime = now - investor[addr].date;
+        uint dailyAmount = investor[addr].deposit * percent / 1000;
+        return dailyAmount * pastTime / 1 days;
     }
-    
-    function getInvestorCount() public view returns(uint) { return addresses.length; }
 
     function payout() internal {
         
+        address wallet = msg.sender;
         uint amount;
         uint deposit = investor[msg.sender].deposit;
         uint received = investor[msg.sender].received;
-        address wallet = msg.sender;
+        uint maxAmount = (deposit * MAX_PERCENT / 100); //max 150%
         
-        if(msg.value == 0) {
+        if (msg.value == 0) {
             require(now >= investor[wallet].date + PAYOUT_INTERVAL, "Too fast payout request");
         }
         
-        if(received >=  deposit) {
+        if (received >=  deposit) {
 
             amount = getPayoutAmount(wallet, REDUCED_PERCENT); //0.5% payout
-
-            uint maxAmount = (deposit / 100 * 150); //max 150%
-
-            if(received.add(amount) >  maxAmount) {
-                amount = maxAmount - received; // residue balance
-                deposit = 0;
-            }
 
         } else {
             
             amount = getPayoutAmount(wallet, HIGHER_PERCENT); //1% payout
 
-            if(received.add(amount) >  deposit) {
-                uint firstPartAmount = deposit - received;  // 1% payout
-                uint secondPartAmount = (amount - firstPartAmount) / 2; // 0.5% payout
+            if (received.add(amount) >  deposit) {
+                uint firstPartAmount = deposit.sub(received) ;  // 1% payout
+                uint secondPartAmount = amount.sub(firstPartAmount) / 2; // 0.5% payout
                 amount = firstPartAmount.add(secondPartAmount);
+
             }
+  
         }
 
-        if(msg.value == 0 && deposit != 0) {
+        if (received.add(amount) >  maxAmount) {
+            amount = maxAmount.sub(received); // residue balance
+            deposit = 0;
+        }
+
+        if (msg.value == 0 && deposit != 0) {
             require(amount >= MIN_WITHDRAWAL, "Amount to pay is too small");
         }
         
@@ -154,8 +161,8 @@ contract EthFinance {
         
         arrInvestor storage i = investor[msg.sender];
 
+
         if(i.deposit == 0) {
-            addresses.push(msg.sender);
             transferCommissionsRef(msg.value, msg.sender);
             countsInvestors = countsInvestors.add(1);
         }
@@ -163,7 +170,8 @@ contract EthFinance {
         i.deposits = i.deposits.add(1);
         i.deposit = i.deposit.add(msg.value);
         i.date = uint32(now);
-        fee = fee.add(msg.value);
+        totalDeposits = totalDeposits.add(msg.value);
+
         
         transferCommissionsAdm(msg.value);
 
@@ -189,9 +197,3 @@ contract EthFinance {
     }
 
 }
-
-
-
-
-
-
